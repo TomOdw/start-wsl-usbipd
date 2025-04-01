@@ -19,5 +19,7 @@ to automatically execute when I open the terminal, see my configuration in the f
 
 ![Win Terminal Profile Settings](Win_Term_Profile_Settings.png)
 
+As shown in the picture, COM3 is passed here to WSL.
+
 Of course it is also possible to start the script in some other way, or adapt it for querying the user if and 
 which COM port should be attached.
