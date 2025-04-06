@@ -4,9 +4,6 @@ param (
     [string]$port
 )
 
-# Set your WSL distribution ID
-$distributionID = "0d13c747-6401-4950-9b93-a460e1ea3f1f"
-
 Write-Output "Using port: $port"
 
 # Step 1 & 2: Get output from usbipd list and extract the BUSID for the given port
@@ -35,26 +32,49 @@ else {
 
 # Step 4a: Start a background WSL process to ensure a WSL 2 distribution is running.
 Write-Output "Starting WSL distribution in background to enable attach..."
-$bgProcess = Start-Process "C:\WINDOWS\system32\wsl.exe" `
-    -ArgumentList "--distribution-id", $distributionID, "-e", "tail", "-f", "/dev/null" `
+$existingBgWSL = Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe'" | Where-Object { 
+   $_.CommandLine -match 'tail -f /dev/null'
+   }
+if ( !($existingBgWSL) ) {
+   $bgProcess = Start-Process "wsl" `
+    -ArgumentList  "-e", "tail", "-f", "/dev/null" `
     -WindowStyle Hidden -PassThru
+}
 
 # Give the distribution a moment to start
 # Start-Sleep -Seconds 1
 
+# Step 4b: Start a background job to repeatedly run the attach command every 2 seconds.
 if ($the_busid) {
-    # Step 4b: Attach the device (again, suppressing errors)
-    Write-Output "Attaching device with BUSID: $the_busid"
-    & usbipd attach --wsl --busid $the_busid 2>$null
+   $existingJob = Get-Job -Name "usbipdAttachLoop" -ErrorAction SilentlyContinue
+   if( !($existingJob) ){
+      Write-Output "Starting background attach loop for device $the_busid..."
+      $attachJob = Start-Job -Name "usbipd-autoattach-wsl-job" -ScriptBlock {
+         param($busid)
+         while ($true) {
+            # Attempt to attach; suppress any errors.
+            usbipd attach --wsl --busid $busid 2>$null
+            Start-Sleep -Seconds 2
+         }
+      } -ArgumentList $the_busid
+   }
 }
 
 # Step 5: Start the tmux session in WSL (foreground)
 Write-Output "Starting tmux session in WSL..."
-& "C:\WINDOWS\system32\wsl.exe" --distribution-id $distributionID --cd ~ tmux new-session -A
+& "wsl" --cd ~ tmux new-session -A
 
-# Once the foreground session ends, perform cleanup
-Write-Output "Foreground WSL session ended. Detaching device..."
+# When the foreground session exits, clean up:
+Write-Output "Foreground WSL session ended. Stopping background attach loop and detaching device..."
+
 if ($the_busid) {
+    # Stop the background attach job
+    if ($attachJob -and ($attachJob.State -eq 'Running' -or $attachJob.State -eq 'NotStarted')) {
+        Stop-Job -Job $attachJob
+        Remove-Job -Job $attachJob
+    }
+
+    # Detach and unbind the device, suppressing errors.
     & usbipd detach --busid $the_busid 2>$null
     & usbipd unbind --busid $the_busid 2>$null
 }
